@@ -5,17 +5,18 @@ class User extends Base {
   protected $table = 'accounts';
   private $userID = false;
   private $user = array();
-
+  
   // get and set methods
-  private function getHash($string, $version=0, $pepper='') {
-    switch($version) {
-    case 0:
-      return hash('sha256', $string.$this->salt);
-      break;
-    case 1:
-      return '$' . $version . '$' . $pepper . '$' . hash('sha256', $string.$this->salt.$pepper);
-      break;
-    }
+  private function makeHash($value) {
+		$hash = password_hash($value, PASSWORD_BCRYPT);
+		if ($hash === false)
+		{
+			throw new \RuntimeException("Bcrypt hashing not supported.");
+		}
+		return $hash;
+  }
+  private function checkHash($value, $hashedValue) {
+		return password_verify($value, $hashedValue);
   }
   public function getUserName($id) {
     return $this->getSingle($id, 'username', 'id');
@@ -270,17 +271,22 @@ class User extends Base {
    * @param pin int PIN to check
    * @return bool
    **/
-  public function checkPin($userId, $pin='') {
+  public function checkPin($userId, $pin) {
     $this->debug->append("STA " . __METHOD__, 4);
     $this->debug->append("Confirming PIN for $userId and pin $pin", 2);
-    $strPinHash = $this->getUserPinHashById($userId);
-    $aPin = explode('$', $strPinHash);
-    count($aPin) == 1 ? $pin_hash = $this->getHash($pin, 0) : $pin_hash = $this->getHash($pin, $aPin[1], $aPin[2]);
-    $stmt = $this->mysqli->prepare("SELECT pin FROM $this->table WHERE id = ? AND pin = ? LIMIT 1");
-    if ($stmt->bind_param('is', $userId, $pin_hash) && $stmt->execute() && $stmt->bind_result($row_pin) && $stmt->fetch()) {
-      $this->setUserPinFailed($userId, 0);
-      return ($pin_hash === $row_pin);
+
+    $stmt = $this->mysqli->prepare("SELECT pin FROM $this->table WHERE id = ? LIMIT 1");
+    if ($this->checkStmt($stmt) && $stmt->bind_param('s', $userId) && $stmt->execute() && $stmt->bind_result($row_pin)) {
+      $stmt->fetch();
+      $stmt->close();
+      $pin_hash = $this->checkHash($pin, $row_pin);
+
+      return $pin_hash === true;
     }
+    
+    
+
+    
     $this->log->log('info', $this->getUserName($userId).' incorrect pin');
     $this->incUserPinFailed($userId);
     // Check if this account should be locked
@@ -305,13 +311,12 @@ class User extends Base {
     $username = $this->getUserName($userID);
     $email = $this->getUserEmail($username);
     $strPasswordHash = $this->getUserPasswordHashById($userID);
-    $aPassword = explode('$', $strPasswordHash);
-    count($aPassword) == 1 ? $password_hash = $this->getHash($current, 0) : $password_hash = $this->getHash($current, $aPassword[1], $aPassword[2]);
+    $password_hash = $this->makeHash($current);
     $newpin = intval( '0' . rand(1,9) . rand(0,9) . rand(0,9) . rand(0,9) );
     $aData['username'] = $username;
     $aData['email'] = $email;
     $aData['pin'] = $newpin;
-    $newpin = $this->getHash($newpin, HASH_VERSION, bin2hex(openssl_random_pseudo_bytes(32)));
+    $newpin= $this->makeHash($newpin);
     $aData['subject'] = 'PIN Reset Request';
     $stmt = $this->mysqli->prepare("UPDATE $this->table SET pin = ? WHERE ( id = ? AND pass = ? )");
     if ($this->checkStmt($stmt) && $stmt->bind_param('sis', $newpin, $userID, $password_hash) && $stmt->execute()) {
@@ -427,9 +432,8 @@ class User extends Base {
       return false;
     }
     $strPasswordHash = $this->getUserPasswordHashById($userID);
-    $aPassword = explode('$', $strPasswordHash);
-    count($aPassword) == 1 ? $password_hash = $this->getHash($current, 0) : $password_hash = $this->getHash($current, $aPassword[1], $aPassword[2]);
-    $new = $this->getHash($new1, HASH_VERSION, bin2hex(openssl_random_pseudo_bytes(32)));
+    $password_hash = $strPasswordHash;
+    $new = $this->makeHash($new1);
     if ($this->config['twofactor']['enabled'] && $this->config['twofactor']['options']['changepw']) {
       $tValid = $this->token->isTokenValid($userID, $strToken, 6);
       if ($tValid) {
@@ -594,11 +598,12 @@ class User extends Base {
     if ($this->checkStmt($stmt) && $stmt->bind_param('s', $username) && $stmt->execute() && $stmt->bind_result($row_username, $row_password, $row_id, $row_timezone, $row_admin)) {
       $stmt->fetch();
       $stmt->close();
-      $aPassword = explode('$', $row_password);
-      count($aPassword) == 1 ? $password_hash = $this->getHash($password, 0) : $password_hash = $this->getHash($password, $aPassword[1], $aPassword[2]);
+      $password_hash = $this->checkHash($password, $row_password);
+      
+      	
       // Store the basic login information
       $this->user = array('username' => $row_username, 'id' => $row_id, 'timezone' => $row_timezone, 'is_admin' => $row_admin);
-      return $password_hash === $row_password && strtolower($username) === strtolower($row_username);
+      return $password_hash === true && strtolower($username) === strtolower($row_username);
     }
     return $this->sqlError();
   }
@@ -808,9 +813,9 @@ class User extends Base {
     }
 
     // Create hashed strings using original string and salt
-    $password_hash = $this->getHash($password1, HASH_VERSION, bin2hex(openssl_random_pseudo_bytes(32)));
-    $pin_hash = $this->getHash($pin, HASH_VERSION, bin2hex(openssl_random_pseudo_bytes(32)));
-    $apikey_hash = $this->getHash($username, 0);
+    $password_hash = $this->makeHash($password1);
+    $pin_hash = $this->makeHash($pin);
+    $apikey_hash = $this->makeHash($username);
     $username_clean = strip_tags($username);
     $signup_time = time();
 
@@ -864,7 +869,7 @@ class User extends Base {
         $this->setErrorMessage( 'New password is too short, please use more than 8 chars' );
         return false;
       }
-      $new_hash = $this->getHash($new1, HASH_VERSION, bin2hex(openssl_random_pseudo_bytes(32)));
+      $new_hash = $this->makeHash($new1);
       $stmt = $this->mysqli->prepare("UPDATE $this->table SET pass = ? WHERE id = ?");
       if ($this->checkStmt($stmt) && $stmt->bind_param('si', $new_hash, $aToken['account_id']) && $stmt->execute() && $stmt->affected_rows === 1) {
         if ($this->token->deleteToken($aToken['token'])) {

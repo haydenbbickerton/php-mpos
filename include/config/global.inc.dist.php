@@ -23,12 +23,9 @@ $config['check_valid_coinaddress'] = true;
 
 /**
  * Defines
- *  Debug setting and salts for hashing passwords
- *   https://github.com/MPOS/php-mpos/wiki/Config-Setup#wiki-defines--salts
+ *  Debug setting
  */
 $config['DEBUG'] = 0;
-$config['SALT'] = 'PLEASEMAKEMESOMETHINGRANDOM';
-$config['SALTY'] = 'THISSHOULDALSOBERRAANNDDOOM';
 
 /**
   * Coin Algorithm
